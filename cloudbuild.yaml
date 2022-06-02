@@ -1,0 +1,28 @@
+steps:
+# Pylint check
+- name: 'python:3'
+  id: Check the python package
+  entrypoint: 'bash'
+  args:
+    - '-c'
+    - |-
+      pip install pylint
+      pip install -r scripts/visitor_count/requirements.txt
+      pylint scripts/
+# Deploy
+- name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:latest'
+  id: Deploy the infrastructure
+  entrypoint: 'bash'
+  args:
+    - '-c'
+    - |-
+      apt install -y zip
+      pushd scripts/visitor_count
+      zip -r ../visitor_count.zip .
+      cd ..
+      file_name="visitor_count_$(md5sum visitor_count.zip | awk '{print $1}').zip"
+      mv visitor_count.zip ${file_name}
+      gsutil cp ${file_name} gs://coffeetime-dev-cloudresume-functions
+      popd
+      gcloud deployment-manager deployments update cloudresume --template deployment-manager/cloudresume.jinja \
+          --properties function_file:${file_name},region:us-east1

@@ -1,0 +1,110 @@
+resources:
+# Website bucket
+- name: resume.chizalum.site
+  type: gcp-types/storage-v1:buckets
+  properties:
+    storageClass: REGIONAL
+    location: {{ properties['region'] }}
+    website:
+      mainPageSuffix: index.html
+      notFoundPage: index.html
+    iamConfiguration:
+      uniformBucketLevelAccess:
+        enabled: true
+    labels:
+      app: cloudresume
+
+# Allow everyone to read the bucket
+- name: cloudresume-public-read
+  type: gcp-types/storage-v1:virtual.buckets.iamMemberBinding
+  properties:
+    bucket: $(ref.resume.chizalum.site.name)
+    role: roles/storage.objectViewer
+    member: allUsers
+
+# Create a public IP address
+- name: chizalumip
+  type: gcp-types/compute-v1:globalAddresses
+  properties:
+    labels:
+      app: cloudresume
+
+
+# Put the bucket as a backend service
+- name: chizalum-bucket
+  type: gcp-types/compute-v1:backendBuckets
+  properties:
+    bucketName: $(ref.resume.chizalum.site.name)
+    description: Backend bucket for the CDN
+    enableCdn: true
+
+# Create an HTTPS certificate
+- name: chizalum-ssl
+  type: gcp-types/compute-v1:sslCertificates
+  properties:
+    type: MANAGED
+    managed:
+      domains:
+        dnsName: chizalum.site, www.chizalum.site
+
+# Create the loadbalancer (URL MAP)
+- name: chizalum-lb
+  type: gcp-types/compute-v1:urlMaps
+  properties:
+    defaultService: $(ref.chizalum-bucket.selfLink)
+    labels:
+      app: cloudresume
+
+# Add the HTTPS certificate
+- name: resume-target-proxy
+  type: gcp-types/compute-v1:targetHttpsProxies
+  properties:
+    urlMap: $(ref.chizalum-lb.selfLink)
+    sslCertificates:
+    - $(ref.chizalum-ssl.selfLink)
+
+# Add the forwarding rule (listener)
+- name: chizalum-lb-forwarding-rule
+  type: gcp-types/compute-v1:globalForwardingRules
+  properties:
+    loadBalancingScheme: EXTERNAL
+    IPAddress: $(ref.chizalumip.address)
+    IPProtocol: TCP
+    portRange: 443
+    target: $(ref.resume-target-proxy.selfLink)
+    labels:
+      app: cloudresume
+
+# Bucket to host the cloud function
+- name: cloudresumefunctions
+  type: gcp-types/storage-v1:buckets
+  properties:
+    storageClass: REGIONAL
+    location: {{ properties['region'] }}
+    iamConfiguration:
+      uniformBucketLevelAccess:
+        enabled: true
+    labels:
+      app: cloudresume
+
+# Deploy the cloudfunction
+- name: resume-visitor-count
+  type: gcp-types/cloudfunctions-v1:projects.locations.functions
+  properties:
+    function: resume-visitor-count
+    parent: projects/{{ env['project'] }}/locations/{{ properties['region'] }}
+    entryPoint: visitor_count
+    runtime: python37
+    sourceArchiveUrl: gs://$(ref.cloudresumefunctions.name)/{{ properties['function_file'] }}
+    maxInstances: 10
+    availableMemoryMb: 128
+    timeout: 3s
+    httpsTrigger: {}
+
+# Allow everyone to execute the function
+- name: resume-public-execution
+  type: gcp-types/cloudfunctions-v1:virtual.projects.locations.functions.iamMemberBinding
+  properties:
+    resource: $(ref.resume-visitor-count.name)
+    member: allUsers
+    role: roles/cloudfunctions.invoker
